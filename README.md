@@ -1,0 +1,1 @@
+# Desafio-Tecnico-Full-Stack--LinkShare-Plataforma-Social-de-Links
