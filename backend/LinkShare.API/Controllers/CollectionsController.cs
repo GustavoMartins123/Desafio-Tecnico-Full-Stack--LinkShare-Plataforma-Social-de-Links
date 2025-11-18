@@ -3,8 +3,10 @@ using LinkShare.API.Data;
 using LinkShare.API.DTOs.Collection;
 using LinkShare.API.DTOs.LinkItem;
 using LinkShare.API.Entities;
+using LinkShare.API.Hubs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 
 namespace LinkShare.API.Controllers;
@@ -14,10 +16,12 @@ namespace LinkShare.API.Controllers;
 public class CollectionsController : ControllerBase
 {
     private readonly ApplicationDbContext _context;
+    private readonly IHubContext<CollectionHub> _hubContext;
 
-    public CollectionsController(ApplicationDbContext context)
+    public CollectionsController(ApplicationDbContext context, IHubContext<CollectionHub> hubContext)
     {
         _context = context;
+        _hubContext = hubContext;
     }
 
     /// <summary>
@@ -219,7 +223,7 @@ public class CollectionsController : ControllerBase
         _context.LinkItems.Add(linkItem);
         await _context.SaveChangesAsync();
 
-        return CreatedAtAction(nameof(GetCollectionById), new { collectionId }, new LinkItemDto
+        var linkItemDto = new LinkItemDto
         {
             Id = linkItem.Id,
             Title = linkItem.Title,
@@ -227,7 +231,14 @@ public class CollectionsController : ControllerBase
             Description = linkItem.Description,
             CollectionId = linkItem.CollectionId,
             CreatedAt = linkItem.CreatedAt
-        });
+        };
+
+        // Notify SignalR clients about the new link
+        await _hubContext.Clients
+            .Group($"collection_{collectionId}")
+            .SendAsync("NewLinkAdded", linkItemDto);
+
+        return CreatedAtAction(nameof(GetCollectionById), new { collectionId }, linkItemDto);
     }
 
     /// <summary>

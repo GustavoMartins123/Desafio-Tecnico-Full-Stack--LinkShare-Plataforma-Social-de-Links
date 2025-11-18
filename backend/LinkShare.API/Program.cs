@@ -1,5 +1,6 @@
 using System.Text;
 using LinkShare.API.Data;
+using LinkShare.API.Hubs;
 using LinkShare.API.Middleware;
 using LinkShare.API.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -50,9 +51,30 @@ builder.Services.AddAuthentication(options =>
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
         ClockSkew = TimeSpan.Zero
     };
+
+    // Configure JWT for SignalR
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"];
+            var path = context.HttpContext.Request.Path;
+
+            // If the request is for our SignalR hub...
+            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+            {
+                // Read the token out of the query string
+                context.Token = accessToken;
+            }
+            return Task.CompletedTask;
+        }
+    };
 });
 
 builder.Services.AddAuthorization();
+
+// Add SignalR
+builder.Services.AddSignalR();
 
 // Register application services
 builder.Services.AddScoped<ITokenService, TokenService>();
@@ -62,14 +84,15 @@ builder.Services.AddSingleton<IRedisService, RedisService>();
 // Add IWebHostEnvironment for file upload service
 builder.Services.AddSingleton<IWebHostEnvironment>(builder.Environment);
 
-// Configure CORS for Flutter clients
+// Configure CORS for Flutter clients (including SignalR)
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
     {
-        policy.AllowAnyOrigin()
+        policy.SetIsOriginAllowed(_ => true) // Allow any origin
               .AllowAnyMethod()
-              .AllowAnyHeader();
+              .AllowAnyHeader()
+              .AllowCredentials(); // Required for SignalR
     });
 });
 
@@ -137,6 +160,9 @@ app.UseJwtBlacklist(); // Check if token is blacklisted
 app.UseAuthorization();
 
 app.MapControllers();
+
+// Map SignalR Hub
+app.MapHub<CollectionHub>("/hubs/collection");
 
 // Create a simple health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));

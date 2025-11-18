@@ -8,6 +8,7 @@ import '../services/profile_service.dart';
 import '../services/storage_service.dart';
 import '../services/feed_service.dart';
 import '../services/sync_service.dart';
+import '../services/signalr_service.dart';
 import '../database/app_database.dart';
 import '../repositories/collection_repository.dart';
 
@@ -79,6 +80,14 @@ final syncServiceProvider = Provider<SyncService>((ref) {
   final apiClient = ref.watch(apiClientProvider);
   final service = SyncService(database, apiClient);
   service.startPeriodicSync();
+  ref.onDispose(() => service.dispose());
+  return service;
+});
+
+// SignalR Service Provider
+final signalRServiceProvider = Provider<SignalRService>((ref) {
+  final storage = ref.watch(storageServiceProvider);
+  final service = SignalRService(storage);
   ref.onDispose(() => service.dispose());
   return service;
 });

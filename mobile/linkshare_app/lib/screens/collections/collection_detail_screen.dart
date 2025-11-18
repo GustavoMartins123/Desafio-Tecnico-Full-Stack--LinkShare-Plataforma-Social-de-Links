@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:drift/drift.dart' as drift;
 import '../../providers/collection_provider.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/service_providers.dart';
+import '../../models/link_item.dart' as model;
+import '../../database/app_database.dart';
 import 'add_link_item_screen.dart';
 import 'share_collection_screen.dart';
 import 'package:intl/intl.dart';
+import 'dart:async';
 
-class CollectionDetailScreen extends ConsumerWidget {
+class CollectionDetailScreen extends ConsumerStatefulWidget {
   final int collectionId;
 
   const CollectionDetailScreen({
@@ -16,20 +21,108 @@ class CollectionDetailScreen extends ConsumerWidget {
   });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final collectionAsync = ref.watch(collectionDetailProvider(collectionId));
+  ConsumerState<CollectionDetailScreen> createState() => _CollectionDetailScreenState();
+}
+
+class _CollectionDetailScreenState extends ConsumerState<CollectionDetailScreen> {
+  StreamSubscription? _newLinkSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeSignalR();
+  }
+
+  Future<void> _initializeSignalR() async {
+    final signalRService = ref.read(signalRServiceProvider);
+    final database = ref.read(databaseProvider);
+
+    // Connect to SignalR if not already connected
+    if (!signalRService.isConnected) {
+      await signalRService.connect();
+    }
+
+    // Join the collection group
+    await signalRService.joinCollectionGroup(widget.collectionId);
+
+    // Listen to NewLinkAdded events
+    _newLinkSubscription = signalRService.newLinkAdded.listen((linkData) async {
+      print('CollectionDetailScreen: Received NewLinkAdded event: $linkData');
+
+      // Check if this link belongs to the current collection
+      final linkCollectionId = linkData['collectionId'] as int;
+      if (linkCollectionId != widget.collectionId) return;
+
+      // Parse the link item
+      final linkItem = model.LinkItem.fromJson(linkData);
+
+      // Insert into local Drift database
+      try {
+        await database.insertLinkItem(
+          LocalLinkItemsCompanion.insert(
+            id: drift.Value(linkItem.id),
+            title: linkItem.title,
+            url: linkItem.url,
+            description: linkItem.description,
+            collectionId: linkItem.collectionId,
+            createdAt: linkItem.createdAt,
+            lastSyncedAt: drift.Value(DateTime.now()),
+          ),
+        );
+
+        print('CollectionDetailScreen: Link added to local database');
+
+        // Refresh the UI by invalidating the provider
+        // This will trigger a rebuild with the updated data from Drift
+        if (mounted) {
+          ref.invalidate(collectionDetailProvider(widget.collectionId));
+        }
+      } catch (e) {
+        print('CollectionDetailScreen: Error inserting link into database: $e');
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    // Clean up SignalR connection
+    final signalRService = ref.read(signalRServiceProvider);
+    signalRService.leaveCollectionGroup(widget.collectionId);
+    _newLinkSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final collectionAsync = ref.watch(collectionDetailProvider(widget.collectionId));
     final currentUser = ref.watch(currentUserProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Collection Details'),
+        actions: [
+          // Real-time indicator
+          Consumer(
+            builder: (context, ref, child) {
+              final signalRService = ref.watch(signalRServiceProvider);
+              return Padding(
+                padding: const EdgeInsets.only(right: 16.0),
+                child: Icon(
+                  Icons.circle,
+                  size: 12,
+                  color: signalRService.isConnected ? Colors.green : Colors.grey,
+                ),
+              );
+            },
+          ),
+        ],
       ),
       body: collectionAsync.when(
         data: (collection) {
           final isOwner = currentUser?.id == collection.ownerId;
 
           return RefreshIndicator(
-            onRefresh: () => ref.refresh(collectionDetailProvider(collectionId).future),
+            onRefresh: () => ref.refresh(collectionDetailProvider(widget.collectionId).future),
             child: CustomScrollView(
               slivers: [
                 SliverToBoxAdapter(
@@ -60,9 +153,27 @@ class CollectionDetailScreen extends ConsumerWidget {
                           ],
                         ),
                         const SizedBox(height: 8),
-                        Text(
-                          'by @${collection.ownerUsername}',
-                          style: TextStyle(color: Colors.grey[600]),
+                        Row(
+                          children: [
+                            Text(
+                              'by @${collection.ownerUsername}',
+                              style: TextStyle(color: Colors.grey[600]),
+                            ),
+                            const SizedBox(width: 8),
+                            Icon(
+                              Icons.flash_on,
+                              size: 16,
+                              color: Colors.amber,
+                            ),
+                            Text(
+                              'Live',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.amber,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
                         ),
                         if (collection.description.isNotEmpty) ...[
                           const SizedBox(height: 12),
@@ -90,7 +201,7 @@ class CollectionDetailScreen extends ConsumerWidget {
                                         ),
                                       ),
                                     );
-                                    ref.invalidate(collectionDetailProvider(collectionId));
+                                    ref.invalidate(collectionDetailProvider(widget.collectionId));
                                   },
                                   icon: const Icon(Icons.add_link),
                                   label: const Text('Add Link'),
@@ -107,7 +218,7 @@ class CollectionDetailScreen extends ConsumerWidget {
                                         ),
                                       ),
                                     );
-                                    ref.invalidate(collectionDetailProvider(collectionId));
+                                    ref.invalidate(collectionDetailProvider(widget.collectionId));
                                   },
                                   icon: const Icon(Icons.share),
                                   label: const Text('Share'),
@@ -207,7 +318,7 @@ class CollectionDetailScreen extends ConsumerWidget {
               Text('Error: ${error.toString()}'),
               const SizedBox(height: 16),
               ElevatedButton(
-                onPressed: () => ref.refresh(collectionDetailProvider(collectionId)),
+                onPressed: () => ref.refresh(collectionDetailProvider(widget.collectionId)),
                 child: const Text('Retry'),
               ),
             ],
