@@ -85,4 +85,24 @@ class ProfileService {
     final response = await _apiClient.delete('/profiles/me/picture');
     return Profile.fromJson(response.data);
   }
+
+  /// Register device for push notifications
+  Future<void> registerDevice({
+    required String fcmToken,
+    required String deviceName,
+    required String platform,
+  }) async {
+    await _apiClient.post('/profiles/me/device', data: {
+      'fcmToken': fcmToken,
+      'deviceName': deviceName,
+      'platform': platform,
+    });
+  }
+
+  /// Unregister device (remove FCM token)
+  Future<void> unregisterDevice(String fcmToken) async {
+    await _apiClient.delete('/profiles/me/device', queryParameters: {
+      'fcmToken': fcmToken,
+    });
+  }
 }

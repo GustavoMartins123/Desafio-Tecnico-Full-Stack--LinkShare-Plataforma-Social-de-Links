@@ -9,6 +9,7 @@ import '../services/storage_service.dart';
 import '../services/feed_service.dart';
 import '../services/sync_service.dart';
 import '../services/signalr_service.dart';
+import '../services/firebase_messaging_service.dart';
 import '../database/app_database.dart';
 import '../repositories/collection_repository.dart';
 
@@ -88,6 +89,13 @@ final syncServiceProvider = Provider<SyncService>((ref) {
 final signalRServiceProvider = Provider<SignalRService>((ref) {
   final storage = ref.watch(storageServiceProvider);
   final service = SignalRService(storage);
+  ref.onDispose(() => service.dispose());
+  return service;
+});
+
+// Firebase Messaging Service Provider
+final firebaseMessagingServiceProvider = Provider<FirebaseMessagingService>((ref) {
+  final service = FirebaseMessagingService();
   ref.onDispose(() => service.dispose());
   return service;
 });
