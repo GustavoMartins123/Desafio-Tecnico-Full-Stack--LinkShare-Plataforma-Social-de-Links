@@ -44,4 +44,10 @@ public class TokenService : ITokenService
 
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
+
+    public string GenerateRefreshToken()
+    {
+        // Generate a cryptographically secure random token
+        return Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+    }
 }

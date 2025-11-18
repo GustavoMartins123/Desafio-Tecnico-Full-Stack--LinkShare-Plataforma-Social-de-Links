@@ -16,6 +16,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<Collection> Collections { get; set; } = null!;
     public DbSet<LinkItem> LinkItems { get; set; } = null!;
     public DbSet<CollectionShare> CollectionShares { get; set; } = null!;
+    public DbSet<UserToken> UserTokens { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -108,6 +109,19 @@ public class ApplicationDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasIndex(e => new { e.CollectionId, e.UserId }).IsUnique();
+        });
+
+        // UserToken Configuration
+        modelBuilder.Entity<UserToken>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.RefreshToken).IsRequired().HasMaxLength(500);
+            entity.HasIndex(e => e.RefreshToken).IsUnique();
+
+            entity.HasOne(t => t.User)
+                .WithMany()
+                .HasForeignKey(t => t.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

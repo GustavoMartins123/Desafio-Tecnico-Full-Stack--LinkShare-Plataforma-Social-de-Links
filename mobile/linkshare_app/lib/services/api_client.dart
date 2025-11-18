@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'storage_service.dart';
+import 'auth_interceptor.dart';
 
 class ApiClient {
   static const String baseUrl = 'http://localhost:8080/api'; // Change for production
@@ -16,24 +17,8 @@ class ApiClient {
       'Accept': 'application/json',
     },
   )) {
-    _dio.interceptors.add(InterceptorsWrapper(
-      onRequest: (options, handler) {
-        // Add auth token to all requests
-        final token = _storage.getToken();
-        if (token != null) {
-          options.headers['Authorization'] = 'Bearer $token';
-        }
-        return handler.next(options);
-      },
-      onError: (error, handler) {
-        // Handle 401 Unauthorized (token expired)
-        if (error.response?.statusCode == 401) {
-          // Could trigger logout here
-          _storage.clearAll();
-        }
-        return handler.next(error);
-      },
-    ));
+    // Add auth interceptor with automatic token refresh on 401
+    _dio.interceptors.add(AuthInterceptor(_dio, _storage));
   }
 
   // Generic GET request

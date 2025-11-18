@@ -23,6 +23,23 @@ services:
       timeout: 5s
       retries: 5
 
+  # Redis (for JWT blacklist)
+  redis:
+    image: redis:alpine
+    container_name: linkshare-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - linkshare-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # .NET API
   api:
     build:
@@ -32,6 +49,8 @@ services:
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       # ASP.NET Core
@@ -46,11 +65,15 @@ services:
       DB_NAME: ${POSTGRES_DB:-linkshare}
       ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=${POSTGRES_DB:-linkshare};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres123}"
 
+      # Redis Connection
+      Redis__ConnectionString: ${REDIS_CONNECTION:-redis:6379}
+
       # JWT Settings
       JwtSettings__SecretKey: ${JWT_SECRET_KEY:-YourSuperSecretKeyThatIsAtLeast32CharactersLongForProduction!}
       JwtSettings__Issuer: ${JWT_ISSUER:-LinkShareAPI}
       JwtSettings__Audience: ${JWT_AUDIENCE:-LinkShareClient}
-      JwtSettings__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-60}
+      JwtSettings__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-15}
+      JwtSettings__RefreshTokenExpirationDays: ${REFRESH_TOKEN_EXPIRATION_DAYS:-7}
     ports:
       - "${API_PORT:-8080}:8080"
     volumes:
@@ -69,6 +92,8 @@ services:
 volumes:
   postgres_data:
     name: linkshare_postgres_data
+  redis_data:
+    name: linkshare_redis_data
   api_uploads:
     name: linkshare_api_uploads
   api_logs:

@@ -1,5 +1,6 @@
 using System.Text;
 using LinkShare.API.Data;
+using LinkShare.API.Middleware;
 using LinkShare.API.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -15,6 +16,15 @@ builder.Services.AddControllers();
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(connectionString));
+
+// Configure Redis
+var redisConnectionString = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
+builder.Services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(sp =>
+{
+    var configuration = StackExchange.Redis.ConfigurationOptions.Parse(redisConnectionString);
+    configuration.AbortOnConnectFail = false; // Don't fail startup if Redis is unavailable
+    return StackExchange.Redis.ConnectionMultiplexer.Connect(configuration);
+});
 
 // Configure JWT Authentication
 var jwtSettings = builder.Configuration.GetSection("JwtSettings");
@@ -47,6 +57,7 @@ builder.Services.AddAuthorization();
 // Register application services
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IFileUploadService, FileUploadService>();
+builder.Services.AddSingleton<IRedisService, RedisService>();
 
 // Add IWebHostEnvironment for file upload service
 builder.Services.AddSingleton<IWebHostEnvironment>(builder.Environment);
@@ -122,6 +133,7 @@ app.UseStaticFiles(new StaticFileOptions
 });
 
 app.UseAuthentication();
+app.UseJwtBlacklist(); // Check if token is blacklisted
 app.UseAuthorization();
 
 app.MapControllers();

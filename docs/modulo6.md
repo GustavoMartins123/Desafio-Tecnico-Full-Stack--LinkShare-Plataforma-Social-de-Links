@@ -1,476 +1,311 @@
-# Módulo 6 - Feed de Atividades Social
+# Módulo 6: Segurança Avançada da API (JTI, Blacklist, Refresh Tokens)
 
-## Descrição
+## Visão Geral
 
-Este módulo implementa um feed de atividades que exibe as ações recentes dos amigos do usuário, criando uma timeline social que aumenta o engajamento e a descoberta de conteúdo na plataforma.
+Este módulo implementa um sistema robusto de autenticação JWT com suporte a **refresh tokens** e **blacklist de tokens revogados**, usando Redis para cache de alta performance.
 
-## Funcionalidades Implementadas
+## Arquitetura
 
-### 1. Timeline de Atividades
-- Exibir atividades recentes de amigos em ordem cronológica
-- Três tipos de atividades rastreadas:
-  - **Link Adicionado**: Quando um amigo adiciona um novo link
-  - **Coleção Criada**: Quando um amigo cria uma nova coleção
-  - **Coleção Compartilhada**: Quando um amigo compartilha uma coleção com você
+### 1. **Access Token (JWT)**
+- **Vida Curta**: 15 minutos
+- **Contém JTI**: Identificador único (Guid) para rastreamento
+- **Claims**: `sub` (userId), `email`, `username`, `jti`
+- **Uso**: Enviado em todas as requisições autenticadas via header `Authorization: Bearer {token}`
 
-### 2. Agregação Inteligente
-- Combina atividades de múltiplas fontes (coleções, links, compartilhamentos)
-- Ordena por timestamp (mais recente primeiro)
-- Limita resultados para performance (máximo 100 itens)
-- Aplica filtros de privacidade automaticamente
+### 2. **Refresh Token (Opaque Token)**
+- **Vida Longa**: 7 dias
+- **Formato**: String aleatória (2 Guids concatenados)
+- **Armazenamento**: Banco de dados PostgreSQL (tabela `UserTokens`)
+- **Uso**: Obter novos access tokens sem login
 
-### 3. Interface Rica
-- Cards visuais diferenciados por tipo de atividade
-- Avatar do usuário com foto de perfil
-- Timestamps relativos ("2h ago", "5d ago")
-- Links clicáveis para abrir URLs externas
-- Navegação para detalhes da coleção
-- Pull-to-refresh para atualizar feed
+### 3. **Redis Blacklist**
+- **Propósito**: Invalidar tokens antes da expiração natural
+- **Chave**: `blacklist:{jti}`
+- **TTL**: Tempo restante até expiração do token
+- **Performance**: O(1) para verificação
 
-### 4. Controle de Privacidade
-- Apenas mostra atividades de coleções públicas ou compartilhadas com o usuário
-- Respeita permissões de amizade
-- Não expõe coleções privadas de amigos
+## Componentes Backend (.NET)
 
-## Implementação
+### 1. Entidade `UserToken`
 
-### Backend (.NET 8 API)
-
-#### 1. DTOs de Feed
-
-**Arquivo:** `backend/LinkShare.API/DTOs/Feed/ActivityType.cs`
+**Arquivo**: `backend/LinkShare.API/Entities/UserToken.cs`
 
 ```csharp
-public enum ActivityType
+public class UserToken
 {
-    LinkAdded,          // 0
-    CollectionCreated,  // 1
-    CollectionShared    // 2
-}
-```
-
-**Arquivo:** `backend/LinkShare.API/DTOs/Feed/ActivityDto.cs`
-
-```csharp
-public class ActivityDto
-{
+    public int Id { get; set; }
     public int UserId { get; set; }
-    public string Username { get; set; }
-    public string UserDisplayName { get; set; }
-    public string? UserProfilePictureUrl { get; set; }
-    public ActivityType ActivityType { get; set; }
-    public DateTime Timestamp { get; set; }
-
-    // Collection-related
-    public int? CollectionId { get; set; }
-    public string? CollectionTitle { get; set; }
-    public bool? CollectionIsPublic { get; set; }
-
-    // Link-related
-    public int? LinkItemId { get; set; }
-    public string? LinkItemTitle { get; set; }
-    public string? LinkItemUrl { get; set; }
-    public string? LinkItemDescription { get; set; }
+    public string RefreshToken { get; set; } // Guid duplo
+    public DateTime CreatedAt { get; set; }
+    public DateTime ExpiresAt { get; set; }
+    public bool IsRevoked { get; set; }
+    public DateTime? RevokedAt { get; set; }
+    public User User { get; set; } = null!;
 }
 ```
 
-#### 2. Endpoint de Feed
+### 2. RedisService
 
-**Arquivo:** `backend/LinkShare.API/Controllers/FeedController.cs`
+**Arquivo**: `backend/LinkShare.API/Services/RedisService.cs`
 
-##### GET /api/feed/activities?limit=50
+Gerencia a blacklist de tokens:
 
-Retorna atividades recentes de amigos.
-
-**Parâmetros:**
-- `limit` (query, opcional): Número máximo de atividades (1-100, padrão: 50)
-
-**Response:** `List<ActivityDto>`
-
-**Lógica de Agregação:**
-
-1. **Buscar IDs dos amigos:**
-   ```csharp
-   var friendIds = await _context.Friendships
-       .Where(f => (f.RequesterId == userId || f.AddresseeId == userId) &&
-                  f.Status == FriendshipStatus.Accepted)
-       .Select(f => f.RequesterId == userId ? f.AddresseeId : f.RequesterId)
-       .ToListAsync();
-   ```
-
-2. **Buscar coleções recentes:**
-   - Filtro: Coleções de amigos que sejam públicas OU compartilhadas comigo
-   - Inclui: Owner, Profile
-   - Ordena: CreatedAt descendente
-
-3. **Buscar links recentes:**
-   - Filtro: Links de coleções de amigos (públicas ou compartilhadas)
-   - Inclui: Collection, Owner, Profile
-   - Ordena: CreatedAt descendente
-
-4. **Buscar compartilhamentos recentes:**
-   - Filtro: Coleções compartilhadas comigo por amigos
-   - Inclui: Collection, Owner, Profile
-   - Ordena: SharedAt descendente
-   - Limite: limit / 2 (para não sobrecarregar o feed)
-
-5. **Combinar e ordenar:**
-   ```csharp
-   var sortedActivities = activities
-       .OrderByDescending(a => a.Timestamp)
-       .Take(limit)
-       .ToList();
-   ```
-
-### Frontend (Flutter)
-
-#### 1. Modelo de Dados
-
-**Arquivo:** `mobile/linkshare_app/lib/models/activity.dart`
-
-```dart
-enum ActivityType {
-  linkAdded,
-  collectionCreated,
-  collectionShared,
-}
-
-class Activity {
-  final int userId;
-  final String username;
-  final String userDisplayName;
-  final String? userProfilePictureUrl;
-  final ActivityType activityType;
-  final DateTime timestamp;
-
-  final int? collectionId;
-  final String? collectionTitle;
-  final bool? collectionIsPublic;
-
-  final int? linkItemId;
-  final String? linkItemTitle;
-  final String? linkItemUrl;
-  final String? linkItemDescription;
-
-  // fromJson, toJson, _parseActivityType
+```csharp
+public interface IRedisService
+{
+    Task BlacklistTokenAsync(string jti, TimeSpan expiration);
+    Task<bool> IsTokenBlacklistedAsync(string jti);
 }
 ```
 
-#### 2. Serviço de Feed
+**Funcionamento**:
+- `BlacklistTokenAsync`: Adiciona JTI ao Redis com TTL
+- `IsTokenBlacklistedAsync`: Verifica se JTI está na blacklist
 
-**Arquivo:** `mobile/linkshare_app/lib/services/feed_service.dart`
+### 3. Middleware `JwtBlacklistMiddleware`
 
-```dart
-class FeedService {
-  final ApiClient _apiClient;
+**Arquivo**: `backend/LinkShare.API/Middleware/JwtBlacklistMiddleware.cs`
 
-  FeedService(this._apiClient);
+**Pipeline**:
+1. `UseAuthentication()` → Valida JWT e popula `User.Claims`
+2. `UseJwtBlacklist()` → **Verifica blacklist**
+3. `UseAuthorization()` → Verifica permissões
 
-  Future<List<Activity>> getFeedActivities({int limit = 50}) async {
-    final response = await _apiClient.get(
-      '/feed/activities',
-      queryParameters: {'limit': limit},
-    );
-    return (response.data as List)
-        .map((json) => Activity.fromJson(json))
-        .toList();
-  }
+**Lógica**:
+```csharp
+if (context.User.Identity?.IsAuthenticated == true)
+{
+    var jti = context.User.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
+    if (await redisService.IsTokenBlacklistedAsync(jti))
+    {
+        // Retorna 401 Unauthorized
+    }
 }
 ```
 
-#### 3. Providers
+### 4. Endpoints de Autenticação
 
-**Arquivo:** `mobile/linkshare_app/lib/providers/service_providers.dart`
+#### POST `/api/auth/login`
 
+**Request**:
+```json
+{
+  "email": "user@example.com",
+  "password": "senha123"
+}
+```
+
+**Response** (200 OK):
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refreshToken": "abc123def456...",
+  "userId": 1,
+  "username": "johndoe",
+  "email": "user@example.com"
+}
+```
+
+**Comportamento**:
+1. Valida credenciais
+2. Gera access token (15 min) com JTI
+3. Gera refresh token (7 dias)
+4. Salva refresh token no PostgreSQL
+
+#### POST `/api/auth/refresh`
+
+**Request**:
+```json
+{
+  "refreshToken": "abc123def456..."
+}
+```
+
+**Response** (200 OK):
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refreshToken": "xyz789uvw012...",
+  "userId": 1,
+  "username": "johndoe",
+  "email": "user@example.com"
+}
+```
+
+**Comportamento**:
+1. Valida refresh token (existe, não expirou, não revogado)
+2. Revoga o refresh token antigo
+3. Gera novo access token + refresh token
+4. Salva novo refresh token
+5. Retorna ambos os tokens
+
+**Erros**:
+- `401`: Token inválido, expirado ou revogado
+
+#### POST `/api/auth/logout` (Requer autenticação)
+
+**Headers**:
+```
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+**Response** (200 OK):
+```json
+{
+  "message": "Logged out successfully"
+}
+```
+
+**Comportamento**:
+1. Extrai JTI do access token
+2. Adiciona JTI à blacklist do Redis (TTL = tempo restante)
+3. Revoga todos os refresh tokens do usuário no PostgreSQL
+
+## Componentes Mobile (Flutter)
+
+### 1. StorageService Atualizado
+
+**Arquivo**: `mobile/linkshare_app/lib/services/storage_service.dart`
+
+**Mudanças**:
 ```dart
-final feedServiceProvider = Provider<FeedService>((ref) {
-  final apiClient = ref.watch(apiClientProvider);
-  return FeedService(apiClient);
+// Antes (Módulo 4)
+Future<void> saveToken(String token);
+String? getToken();
+
+// Agora (Módulo 6)
+Future<void> saveTokens({
+  required String accessToken,
+  required String refreshToken,
 });
+String? getAccessToken();
+String? getRefreshToken();
 ```
 
-**Arquivo:** `mobile/linkshare_app/lib/providers/feed_provider.dart`
+**Chaves no SharedPreferences**:
+- `access_token`: JWT de acesso
+- `refresh_token`: Token opaco para renovação
 
-```dart
-final feedActivitiesProvider = FutureProvider<List<Activity>>((ref) async {
-  final feedService = ref.watch(feedServiceProvider);
-  return await feedService.getFeedActivities(limit: 50);
-});
-```
+### 2. AuthInterceptor
 
-#### 4. Tela de Feed
+**Arquivo**: `mobile/linkshare_app/lib/services/auth_interceptor.dart`
 
-**Arquivo:** `mobile/linkshare_app/lib/screens/home/feed_tab.dart`
-
-**Componentes:**
-
-- **FeedTab (ConsumerWidget):**
-  - AppBar com título "Feed" e botão de refresh
-  - Usa `feedActivitiesProvider` para dados
-  - Estados: Loading, Error, Empty, Data
-  - RefreshIndicator para pull-to-refresh
-  - ListView com `_ActivityCard`
-
-- **_ActivityCard (StatelessWidget):**
-  - Card clicável que navega para CollectionDetailScreen
-  - Header com avatar, nome, ação, timestamp
-  - Conteúdo diferenciado por tipo de atividade
-
-**Renderização por Tipo:**
-
-1. **Link Adicionado** (`_buildLinkActivity`):
-   - Container azul com ícone de link
-   - Título do link em negrito
-   - Descrição (se houver)
-   - URL clicável com ícone `open_in_new`
-   - Nome da coleção em itálico
-
-2. **Coleção Criada/Compartilhada** (`_buildCollectionActivity`):
-   - Container laranja (criada) ou verde (compartilhada)
-   - Ícone público/privado
-   - Título da coleção
-   - Status: "Public collection" ou "Private collection"
-   - Ícone de chevron indicando navegação
-
-**Timestamps Relativos:**
-
-```dart
-String _getTimeAgo() {
-  final difference = now.difference(activity.timestamp);
-
-  if (difference.inDays > 7) return DateFormat.MMMd().format(timestamp);
-  if (difference.inDays > 0) return '${difference.inDays}d ago';
-  if (difference.inHours > 0) return '${difference.inHours}h ago';
-  if (difference.inMinutes > 0) return '${difference.inMinutes}m ago';
-  return 'Just now';
-}
-```
-
-## Estrutura de Arquivos Criados/Modificados
+**Fluxo de Renovação Automática**:
 
 ```
-backend/LinkShare.API/
-├── DTOs/Feed/
-│   ├── ActivityType.cs                    (NOVO)
-│   └── ActivityDto.cs                     (NOVO)
-└── Controllers/
-    └── FeedController.cs                  (NOVO)
-
-mobile/linkshare_app/
-├── lib/
-│   ├── models/
-│   │   └── activity.dart                  (NOVO)
-│   ├── services/
-│   │   └── feed_service.dart              (NOVO)
-│   ├── providers/
-│   │   ├── service_providers.dart         (MODIFICADO - feedServiceProvider)
-│   │   └── feed_provider.dart             (NOVO)
-│   └── screens/home/
-│       └── feed_tab.dart                  (MODIFICADO - implementação completa)
+┌─────────────────────────────────────────────────────┐
+│ 1. Request com Access Token no header               │
+└────────────────┬────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────┐
+│ 2. API retorna 401 Unauthorized                     │
+└────────────────┬────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────┐
+│ 3. Interceptor detecta 401                          │
+│    - Chama POST /auth/refresh com refresh token     │
+└────────────────┬────────────────────────────────────┘
+                 │
+         ┌───────┴───────┐
+         │               │
+         ▼               ▼
+   ┌─────────┐     ┌──────────┐
+   │ Sucesso │     │  Falha   │
+   └────┬────┘     └─────┬────┘
+        │                │
+        ▼                ▼
+┌───────────────┐  ┌─────────────┐
+│ 4a. Salva     │  │ 4b. Logout  │
+│ novos tokens  │  │ (clearAll)  │
+│ 5a. Retry     │  │             │
+│ request       │  │             │
+└───────────────┘  └─────────────┘
 ```
 
-## Fluxos de Uso
+## Configuração Docker
 
-### Fluxo 1: Visualizar Feed
+### Redis Adicionado ao `docker-compose.yml`
 
-```
-1. Usuário abre app e está autenticado
-2. HomeScreen mostra FeedTab (primeira tab)
-3. FeedProvider carrega automaticamente
-4. GET /api/feed/activities?limit=50
-5. Backend busca amigos do usuário
-6. Backend agrega atividades (coleções, links, shares)
-7. Backend filtra por privacidade
-8. Backend ordena por timestamp
-9. Backend retorna List<ActivityDto>
-10. Flutter mapeia para List<Activity>
-11. UI renderiza cards diferenciados
-12. Usuário vê timeline de atividades
-```
-
-### Fluxo 2: Atualizar Feed
-
-```
-1. Usuário puxa lista para baixo (pull-to-refresh)
-2. RefreshIndicator ativa
-3. ref.refresh(feedActivitiesProvider.future)
-4. Nova requisição ao backend
-5. Feed atualiza com novas atividades
-6. Indicador desaparece
+```yaml
+redis:
+  image: redis:alpine
+  container_name: linkshare-redis
+  restart: unless-stopped
+  ports:
+    - "6379:6379"
+  volumes:
+    - redis_data:/data
+  healthcheck:
+    test: ["CMD", "redis-cli", "ping"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
 ```
 
-### Fluxo 3: Navegar para Coleção
+### Variáveis de Ambiente
 
-```
-1. Usuário toca em card de atividade
-2. Navigator.push → CollectionDetailScreen(collectionId)
-3. Usuário vê detalhes da coleção
-4. Pode visualizar links (sempre)
-5. Pode adicionar links (se tiver permissão)
-```
+```env
+# JWT Configuration
+JWT_SECRET_KEY=YourSuperSecretKeyThatIsAtLeast32CharactersLongForProduction!
+JWT_ISSUER=LinkShareAPI
+JWT_AUDIENCE=LinkShareClient
+JWT_EXPIRATION_MINUTES=15
+REFRESH_TOKEN_EXPIRATION_DAYS=7
 
-### Fluxo 4: Abrir Link Externo
-
-```
-1. Usuário vê atividade de "link adicionado"
-2. Toca na URL destacada em azul
-3. url_launcher abre navegador externo
-4. Link abre fora do app
+# Redis Configuration
+REDIS_CONNECTION=redis:6379
 ```
 
-## Tipos de Atividades
+## Segurança
 
-### 1. Link Adicionado
+### Proteções Implementadas
 
-**Quando é criado:**
-- Um amigo adiciona um link a uma coleção pública
-- Um amigo adiciona um link a uma coleção compartilhada com você
+✅ **JTI (JWT ID)**: Cada token tem ID único para rastreamento
+✅ **Blacklist**: Tokens revogados são bloqueados antes da expiração
+✅ **Refresh Token Rotation**: Cada refresh invalida o token antigo
+✅ **Tokens de Vida Curta**: Access token expira em 15 minutos
+✅ **Armazenamento Seguro**: Refresh tokens no PostgreSQL (não em localStorage)
+✅ **Middleware de Verificação**: Toda requisição valida blacklist
+✅ **Logout Completo**: Revoga access token E todos os refresh tokens do usuário
 
-**Dados exibidos:**
-- Nome do amigo
-- Título do link
-- Descrição do link (opcional)
-- URL do link (clicável)
-- Nome da coleção
+## Arquivos Modificados/Criados
 
-**Ações possíveis:**
-- Clicar no card → Ver coleção
-- Clicar na URL → Abrir link no navegador
+### Backend (.NET)
 
-### 2. Coleção Criada
+**Novos Arquivos**:
+- `Entities/UserToken.cs`
+- `Services/IRedisService.cs`
+- `Services/RedisService.cs`
+- `Middleware/JwtBlacklistMiddleware.cs`
+- `DTOs/Auth/RefreshTokenRequestDto.cs`
 
-**Quando é criado:**
-- Um amigo cria uma coleção pública
-- Um amigo cria uma coleção e compartilha com você
+**Modificados**:
+- `Data/ApplicationDbContext.cs` (adicionado `DbSet<UserToken>`)
+- `Controllers/AuthController.cs` (login, refresh, logout)
+- `Services/TokenService.cs` (adicionado `GenerateRefreshToken()`)
+- `Services/ITokenService.cs` (nova interface)
+- `DTOs/Auth/AuthResponseDto.cs` (adicionado `RefreshToken`)
+- `Program.cs` (Redis, middleware)
+- `LinkShare.API.csproj` (StackExchange.Redis)
 
-**Dados exibidos:**
-- Nome do amigo
-- Título da coleção
-- Status: Pública ou Privada
+### Mobile (Flutter)
 
-**Ações possíveis:**
-- Clicar no card → Ver coleção e seus links
+**Novos Arquivos**:
+- `services/auth_interceptor.dart`
 
-### 3. Coleção Compartilhada
+**Modificados**:
+- `services/storage_service.dart` (tokens duplos)
+- `services/api_client.dart` (usa AuthInterceptor)
 
-**Quando é criado:**
-- Um amigo compartilha uma coleção com você
+### Infraestrutura
 
-**Dados exibidos:**
-- Nome do amigo
-- Título da coleção
-- Status: Pública ou Privada
-- Mensagem: "shared a collection with you"
-
-**Ações possíveis:**
-- Clicar no card → Ver coleção compartilhada
-
-## Controle de Privacidade e Segurança
-
-### Backend
-- ✅ Apenas amigos aceitos (FriendshipStatus.Accepted)
-- ✅ Apenas coleções públicas ou compartilhadas
-- ✅ Validação de autenticação JWT
-- ✅ Limite de resultados (cap em 100)
-- ✅ Filtragem automática de conteúdo privado
-
-### Frontend
-- ✅ Navegação segura para coleções
-- ✅ Tratamento de erros com feedback visual
-- ✅ Estados vazios informativos
-- ✅ Links externos abertos em navegador (não dentro do app)
-
-## Performance
-
-**Otimizações implementadas:**
-
-1. **Limit parameter:**
-   - Padrão: 50 atividades
-   - Máximo: 100 atividades
-   - Previne sobrecarga do backend
-
-2. **Shares limitados:**
-   - Shares pegam apenas `limit / 2`
-   - Evita feed dominado por compartilhamentos
-
-3. **Eager loading:**
-   - `Include(c => c.Owner).ThenInclude(o => o.Profile)`
-   - Reduz N+1 queries
-
-4. **Ordenação in-memory:**
-   - Todas as atividades agregadas e ordenadas uma vez
-   - Take(limit) aplicado após ordenação
-
-5. **Caching no cliente:**
-   - FutureProvider cacheia automaticamente
-   - Refresh manual via pull-to-refresh
-
-## Tecnologias Utilizadas
-
-### Backend
-- **ASP.NET Core 8.0** - Framework web
-- **Entity Framework Core** - ORM
-- **LINQ** - Queries e agregações
-- **Include/ThenInclude** - Eager loading
-
-### Frontend
-- **Flutter Riverpod** - State management
-- **FutureProvider** - Async data fetching
-- **RefreshIndicator** - Pull-to-refresh
-- **url_launcher** - Abrir links externos
-- **intl** - Formatação de datas
-- **NetworkImage** - Carregamento de avatares
-
-## Endpoint API
-
-| Método | Endpoint | Descrição | Auth | Params |
-|--------|----------|-----------|------|--------|
-| GET | `/api/feed/activities` | Feed de atividades | ✅ | `limit` (1-100) |
-
-## Como Usar
-
-### 1. Iniciar Ambiente
-
-```bash
-# Backend + Database
-cd backend/LinkShare.API
-docker-compose up -d
-
-# Flutter App
-cd mobile/linkshare_app
-flutter run
-```
-
-### 2. Visualizar Feed
-
-1. Faça login no app
-2. A primeira tab é automaticamente o "Feed"
-3. Veja atividades dos seus amigos
-4. Puxe para baixo para atualizar
-
-### 3. Interagir com Atividades
-
-1. **Ver Coleção**: Toque em qualquer card
-2. **Abrir Link**: Toque na URL azul em atividades de link
-3. **Atualizar**: Puxe lista para baixo
-
-## Melhorias Futuras (Fora do Escopo)
-
-- [ ] Paginação infinita (scroll infinito)
-- [ ] Cache local de atividades
-- [ ] Notificações push de novas atividades
-- [ ] Filtros por tipo de atividade
-- [ ] Busca no feed
-- [ ] Reações/curtidas em atividades
-- [ ] Comentários em atividades
-- [ ] Compartilhar atividade externa
-- [ ] Feed personalizado com algoritmo de relevância
-- [ ] Atividades agrupadas ("João e 3 outros adicionaram links")
-- [ ] Analytics de engajamento
-- [ ] Sugestões baseadas em atividades (discover)
+**Modificados**:
+- `docker-compose.yml` (serviço Redis, variáveis de ambiente)
 
 ---
 
 **Módulo 6 concluído com sucesso!** ✅
 
-Feed social completo com agregação inteligente e interface rica para aumentar engajamento na plataforma.
+Sistema de autenticação robusto com JWT, refresh tokens e blacklist Redis.
