@@ -6,6 +6,7 @@ import '../services/collection_service.dart';
 import '../services/friendship_service.dart';
 import '../services/profile_service.dart';
 import '../services/storage_service.dart';
+import '../services/feed_service.dart';
 
 // SharedPreferences Provider
 final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
@@ -47,4 +48,10 @@ final collectionServiceProvider = Provider<CollectionService>((ref) {
 final friendshipServiceProvider = Provider<FriendshipService>((ref) {
   final apiClient = ref.watch(apiClientProvider);
   return FriendshipService(apiClient);
+});
+
+// Feed Service Provider
+final feedServiceProvider = Provider<FeedService>((ref) {
+  final apiClient = ref.watch(apiClientProvider);
+  return FeedService(apiClient);
 });
