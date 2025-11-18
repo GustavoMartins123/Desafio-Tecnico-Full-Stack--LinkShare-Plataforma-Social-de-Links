@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:16-alpine
+    container_name: linkshare-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres123}
+      POSTGRES_DB: ${POSTGRES_DB:-linkshare}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - linkshare-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # .NET API
+  api:
+    build:
+      context: ./backend/LinkShare.API
+      dockerfile: Dockerfile
+    container_name: linkshare-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # ASP.NET Core
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ASPNETCORE_URLS: http://+:8080
+
+      # Database Connection
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres123}
+      DB_NAME: ${POSTGRES_DB:-linkshare}
+      ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=${POSTGRES_DB:-linkshare};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres123}"
+
+      # JWT Settings
+      JwtSettings__SecretKey: ${JWT_SECRET_KEY:-YourSuperSecretKeyThatIsAtLeast32CharactersLongForProduction!}
+      JwtSettings__Issuer: ${JWT_ISSUER:-LinkShareAPI}
+      JwtSettings__Audience: ${JWT_AUDIENCE:-LinkShareClient}
+      JwtSettings__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-60}
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - api_uploads:/app/wwwroot/uploads
+      - api_logs:/app/logs
+    networks:
+      - linkshare-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# Named volumes for data persistence
+volumes:
+  postgres_data:
+    name: linkshare_postgres_data
+  api_uploads:
+    name: linkshare_api_uploads
+  api_logs:
+    name: linkshare_api_logs
+
+# Network for service communication
+networks:
+  linkshare-network:
+    name: linkshare_network
+    driver: bridge
