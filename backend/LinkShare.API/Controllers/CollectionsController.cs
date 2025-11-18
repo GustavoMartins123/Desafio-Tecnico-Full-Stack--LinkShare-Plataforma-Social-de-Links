@@ -4,6 +4,7 @@ using LinkShare.API.DTOs.Collection;
 using LinkShare.API.DTOs.LinkItem;
 using LinkShare.API.Entities;
 using LinkShare.API.Hubs;
+using LinkShare.API.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -17,11 +18,16 @@ public class CollectionsController : ControllerBase
 {
     private readonly ApplicationDbContext _context;
     private readonly IHubContext<CollectionHub> _hubContext;
+    private readonly IPushNotificationService _pushNotificationService;
 
-    public CollectionsController(ApplicationDbContext context, IHubContext<CollectionHub> hubContext)
+    public CollectionsController(
+        ApplicationDbContext context,
+        IHubContext<CollectionHub> hubContext,
+        IPushNotificationService pushNotificationService)
     {
         _context = context;
         _hubContext = hubContext;
+        _pushNotificationService = pushNotificationService;
     }
 
     /// <summary>
@@ -298,6 +304,21 @@ public class CollectionsController : ControllerBase
 
         _context.CollectionShares.Add(share);
         await _context.SaveChangesAsync();
+
+        // Send push notification to the shared user
+        var ownerName = collection.Owner.Profile?.DisplayName ?? collection.Owner.Username;
+        await _pushNotificationService.SendToUserAsync(
+            request.SharedWithUserId,
+            "Collection Shared",
+            $"{ownerName} shared \"{collection.Title}\" with you",
+            new Dictionary<string, string>
+            {
+                { "type", "collection_shared" },
+                { "collectionId", collectionId.ToString() },
+                { "ownerId", userId.ToString() },
+                { "canEdit", request.CanEdit.ToString() }
+            }
+        );
 
         // Load user info for response
         var sharedWithUser = await _context.Users

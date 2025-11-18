@@ -1,4 +1,6 @@
 using System.Text;
+using FirebaseAdmin;
+using Google.Apis.Auth.OAuth2;
 using LinkShare.API.Data;
 using LinkShare.API.Hubs;
 using LinkShare.API.Middleware;
@@ -76,10 +78,29 @@ builder.Services.AddAuthorization();
 // Add SignalR
 builder.Services.AddSignalR();
 
+// Configure Firebase Admin SDK
+// NOTE: Download your firebase-adminsdk.json from Firebase Console
+// and place it in the backend/LinkShare.API directory
+var firebaseCredentialPath = builder.Configuration["Firebase:CredentialPath"] ?? "firebase-adminsdk.json";
+if (File.Exists(firebaseCredentialPath))
+{
+    FirebaseApp.Create(new AppOptions
+    {
+        Credential = GoogleCredential.FromFile(firebaseCredentialPath)
+    });
+    Console.WriteLine("Firebase Admin SDK initialized successfully.");
+}
+else
+{
+    Console.WriteLine($"Warning: Firebase credential file not found at {firebaseCredentialPath}");
+    Console.WriteLine("Push notifications will not work until you configure Firebase.");
+}
+
 // Register application services
 builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IFileUploadService, FileUploadService>();
 builder.Services.AddSingleton<IRedisService, RedisService>();
+builder.Services.AddScoped<IPushNotificationService, PushNotificationService>();
 
 // Add IWebHostEnvironment for file upload service
 builder.Services.AddSingleton<IWebHostEnvironment>(builder.Environment);

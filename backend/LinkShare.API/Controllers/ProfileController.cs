@@ -1,6 +1,8 @@
 using System.Security.Claims;
 using LinkShare.API.Data;
+using LinkShare.API.DTOs.Device;
 using LinkShare.API.DTOs.Profile;
+using LinkShare.API.Entities;
 using LinkShare.API.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -214,6 +216,73 @@ public class ProfilesController : ControllerBase
             Bio = user.Profile.Bio,
             ProfilePictureUrl = user.Profile.ProfilePictureUrl
         });
+    }
+
+    /// <summary>
+    /// Register device for push notifications
+    /// </summary>
+    /// <param name="deviceDto">Device information with FCM token</param>
+    /// <returns>Success message</returns>
+    [Authorize]
+    [HttpPost("me/device")]
+    public async Task<ActionResult> RegisterDevice([FromBody] RegisterDeviceDto deviceDto)
+    {
+        var userId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+        // Check if device with this token already exists
+        var existingDevice = await _context.UserDevices
+            .FirstOrDefaultAsync(d => d.FcmToken == deviceDto.FcmToken);
+
+        if (existingDevice != null)
+        {
+            // Update existing device
+            existingDevice.UserId = userId; // In case user changed
+            existingDevice.DeviceName = deviceDto.DeviceName;
+            existingDevice.Platform = deviceDto.Platform;
+            existingDevice.LastUsedAt = DateTime.UtcNow;
+            existingDevice.IsActive = true;
+        }
+        else
+        {
+            // Create new device
+            var device = new UserDevice
+            {
+                UserId = userId,
+                FcmToken = deviceDto.FcmToken,
+                DeviceName = deviceDto.DeviceName,
+                Platform = deviceDto.Platform,
+                CreatedAt = DateTime.UtcNow,
+                LastUsedAt = DateTime.UtcNow,
+                IsActive = true
+            };
+
+            _context.UserDevices.Add(device);
+        }
+
+        await _context.SaveChangesAsync();
+
+        return Ok(new { message = "Device registered successfully" });
+    }
+
+    /// <summary>
+    /// Unregister device for push notifications
+    /// </summary>
+    /// <param name="fcmToken">FCM token to unregister</param>
+    /// <returns>Success message</returns>
+    [Authorize]
+    [HttpDelete("me/device")]
+    public async Task<ActionResult> UnregisterDevice([FromQuery] string fcmToken)
+    {
+        var device = await _context.UserDevices
+            .FirstOrDefaultAsync(d => d.FcmToken == fcmToken);
+
+        if (device != null)
+        {
+            device.IsActive = false;
+            await _context.SaveChangesAsync();
+        }
+
+        return Ok(new { message = "Device unregistered successfully" });
     }
 
     /// <summary>

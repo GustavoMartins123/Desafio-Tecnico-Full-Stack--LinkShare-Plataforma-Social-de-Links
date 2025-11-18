@@ -2,6 +2,7 @@ using System.Security.Claims;
 using LinkShare.API.Data;
 using LinkShare.API.DTOs.Friendship;
 using LinkShare.API.Entities;
+using LinkShare.API.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,10 +15,12 @@ namespace LinkShare.API.Controllers;
 public class FriendsController : ControllerBase
 {
     private readonly ApplicationDbContext _context;
+    private readonly IPushNotificationService _pushNotificationService;
 
-    public FriendsController(ApplicationDbContext context)
+    public FriendsController(ApplicationDbContext context, IPushNotificationService pushNotificationService)
     {
         _context = context;
+        _pushNotificationService = pushNotificationService;
     }
 
     /// <summary>
@@ -79,6 +82,20 @@ public class FriendsController : ControllerBase
             .Query()
             .Include(u => u.Profile)
             .LoadAsync();
+
+        // Send push notification to the addressee
+        var requesterName = friendship.Requester.Profile?.DisplayName ?? friendship.Requester.Username;
+        await _pushNotificationService.SendToUserAsync(
+            userId,
+            "New Friend Request",
+            $"{requesterName} wants to be your friend",
+            new Dictionary<string, string>
+            {
+                { "type", "friend_request" },
+                { "requesterId", currentUserId.ToString() },
+                { "friendshipId", friendship.Id.ToString() }
+            }
+        );
 
         return CreatedAtAction(nameof(GetFriendRequests), new FriendshipDto
         {
@@ -165,6 +182,20 @@ public class FriendsController : ControllerBase
         friendship.Status = FriendshipStatus.Accepted;
         friendship.UpdatedAt = DateTime.UtcNow;
         await _context.SaveChangesAsync();
+
+        // Send push notification to the requester
+        var addresseeName = friendship.Addressee.Profile?.DisplayName ?? friendship.Addressee.Username;
+        await _pushNotificationService.SendToUserAsync(
+            friendship.RequesterId,
+            "Friend Request Accepted",
+            $"{addresseeName} accepted your friend request",
+            new Dictionary<string, string>
+            {
+                { "type", "friend_request_accepted" },
+                { "friendId", currentUserId.ToString() },
+                { "friendshipId", friendship.Id.ToString() }
+            }
+        );
 
         return Ok(new FriendshipDto
         {

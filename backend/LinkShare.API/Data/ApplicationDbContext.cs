@@ -17,6 +17,7 @@ public class ApplicationDbContext : DbContext
     public DbSet<LinkItem> LinkItems { get; set; } = null!;
     public DbSet<CollectionShare> CollectionShares { get; set; } = null!;
     public DbSet<UserToken> UserTokens { get; set; } = null!;
+    public DbSet<UserDevice> UserDevices { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -121,6 +122,21 @@ public class ApplicationDbContext : DbContext
             entity.HasOne(t => t.User)
                 .WithMany()
                 .HasForeignKey(t => t.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // UserDevice Configuration
+        modelBuilder.Entity<UserDevice>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.FcmToken).IsRequired().HasMaxLength(500);
+            entity.Property(e => e.DeviceName).HasMaxLength(200);
+            entity.Property(e => e.Platform).HasMaxLength(50);
+            entity.HasIndex(e => e.FcmToken).IsUnique();
+
+            entity.HasOne(d => d.User)
+                .WithMany()
+                .HasForeignKey(d => d.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
     }
