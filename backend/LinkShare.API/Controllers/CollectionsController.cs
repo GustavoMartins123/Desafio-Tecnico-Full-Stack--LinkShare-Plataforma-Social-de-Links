@@ -19,15 +19,18 @@ public class CollectionsController : ControllerBase
     private readonly ApplicationDbContext _context;
     private readonly IHubContext<CollectionHub> _hubContext;
     private readonly IPushNotificationService _pushNotificationService;
+    private readonly IMessageQueueService _messageQueueService;
 
     public CollectionsController(
         ApplicationDbContext context,
         IHubContext<CollectionHub> hubContext,
-        IPushNotificationService pushNotificationService)
+        IPushNotificationService pushNotificationService,
+        IMessageQueueService messageQueueService)
     {
         _context = context;
         _hubContext = hubContext;
         _pushNotificationService = pushNotificationService;
+        _messageQueueService = messageQueueService;
     }
 
     /// <summary>
@@ -188,11 +191,11 @@ public class CollectionsController : ControllerBase
     }
 
     /// <summary>
-    /// Add a new link item to a collection
+    /// Add a new link item to a collection (async processing with metadata extraction)
     /// </summary>
     /// <param name="collectionId">Collection ID</param>
-    /// <param name="createDto">Link item data (Title, URL, Description)</param>
-    /// <returns>Created link item</returns>
+    /// <param name="createDto">Link item data (URL is required, Title and Description are optional and will be extracted)</param>
+    /// <returns>Created link item with processing status</returns>
     [Authorize]
     [HttpPost("{collectionId}/items")]
     public async Task<ActionResult<LinkItemDto>> AddLinkItem(int collectionId, [FromBody] CreateLinkItemDto createDto)
@@ -217,11 +220,13 @@ public class CollectionsController : ControllerBase
             return Forbid();
         }
 
+        // Create link item with placeholder title and description
+        // The Worker will extract metadata from the URL asynchronously
         var linkItem = new LinkItem
         {
-            Title = createDto.Title,
+            Title = string.IsNullOrWhiteSpace(createDto.Title) ? "Processando..." : createDto.Title,
             URL = createDto.URL,
-            Description = createDto.Description,
+            Description = string.IsNullOrWhiteSpace(createDto.Description) ? "Extraindo informações da URL..." : createDto.Description,
             CollectionId = collectionId,
             CreatedAt = DateTime.UtcNow
         };
@@ -239,12 +244,30 @@ public class CollectionsController : ControllerBase
             CreatedAt = linkItem.CreatedAt
         };
 
-        // Notify SignalR clients about the new link
+        // Notify SignalR clients about the new link immediately
         await _hubContext.Clients
             .Group($"collection_{collectionId}")
             .SendAsync("NewLinkAdded", linkItemDto);
 
-        return CreatedAtAction(nameof(GetCollectionById), new { collectionId }, linkItemDto);
+        // Only publish to queue if using default processing text
+        // This allows users to provide their own title/description if they want
+        if (string.IsNullOrWhiteSpace(createDto.Title) || string.IsNullOrWhiteSpace(createDto.Description))
+        {
+            // Publish message to RabbitMQ for async metadata extraction
+            try
+            {
+                _messageQueueService.PublishLinkMetadataJob(linkItem.Id, collectionId, linkItem.URL);
+            }
+            catch (Exception ex)
+            {
+                // Log error but don't fail the request
+                // The link is already saved, metadata extraction is optional
+                Console.WriteLine($"Failed to publish metadata job: {ex.Message}");
+            }
+        }
+
+        // Return 202 Accepted to indicate async processing
+        return AcceptedAtAction(nameof(GetCollectionById), new { collectionId }, linkItemDto);
     }
 
     /// <summary>

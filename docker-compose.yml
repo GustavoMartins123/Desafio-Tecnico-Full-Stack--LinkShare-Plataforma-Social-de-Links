@@ -88,12 +88,35 @@ services:
       retries: 3
       start_period: 40s
 
+  # RabbitMQ (Message Queue)
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: linkshare-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"       # AMQP protocol
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"  # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - linkshare-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 # Named volumes for data persistence
 volumes:
   postgres_data:
     name: linkshare_postgres_data
   redis_data:
     name: linkshare_redis_data
+  rabbitmq_data:
+    name: linkshare_rabbitmq_data
   api_uploads:
     name: linkshare_api_uploads
   api_logs:

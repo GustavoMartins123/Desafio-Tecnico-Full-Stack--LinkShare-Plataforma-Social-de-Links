@@ -101,6 +101,7 @@ builder.Services.AddScoped<ITokenService, TokenService>();
 builder.Services.AddScoped<IFileUploadService, FileUploadService>();
 builder.Services.AddSingleton<IRedisService, RedisService>();
 builder.Services.AddScoped<IPushNotificationService, PushNotificationService>();
+builder.Services.AddSingleton<IMessageQueueService, MessageQueueService>();
 
 // Add IWebHostEnvironment for file upload service
 builder.Services.AddSingleton<IWebHostEnvironment>(builder.Environment);
