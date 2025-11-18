@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'package:dio/dio.dart';
+import 'package:http_parser/http_parser.dart';
 import '../models/profile.dart';
 import 'api_client.dart';
 
@@ -34,5 +37,52 @@ class ProfileService {
     return (response.data as List)
         .map((json) => Profile.fromJson(json))
         .toList();
+  }
+
+  Future<Profile> uploadProfilePicture(File imageFile) async {
+    // Get file extension
+    final extension = imageFile.path.split('.').last.toLowerCase();
+
+    // Determine MIME type
+    String mimeType;
+    switch (extension) {
+      case 'jpg':
+      case 'jpeg':
+        mimeType = 'image/jpeg';
+        break;
+      case 'png':
+        mimeType = 'image/png';
+        break;
+      case 'gif':
+        mimeType = 'image/gif';
+        break;
+      case 'webp':
+        mimeType = 'image/webp';
+        break;
+      default:
+        mimeType = 'image/jpeg';
+    }
+
+    // Create multipart file
+    final fileName = imageFile.path.split('/').last;
+    final multipartFile = await MultipartFile.fromFile(
+      imageFile.path,
+      filename: fileName,
+      contentType: MediaType.parse(mimeType),
+    );
+
+    // Create FormData
+    final formData = FormData.fromMap({
+      'file': multipartFile,
+    });
+
+    // Upload
+    final response = await _apiClient.post('/profiles/me/picture', data: formData);
+    return Profile.fromJson(response.data);
+  }
+
+  Future<Profile> deleteProfilePicture() async {
+    final response = await _apiClient.delete('/profiles/me/picture');
+    return Profile.fromJson(response.data);
   }
 }

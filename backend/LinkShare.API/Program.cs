@@ -46,6 +46,10 @@ builder.Services.AddAuthorization();
 
 // Register application services
 builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddScoped<IFileUploadService, FileUploadService>();
+
+// Add IWebHostEnvironment for file upload service
+builder.Services.AddSingleton<IWebHostEnvironment>(builder.Environment);
 
 // Configure CORS for Flutter clients
 builder.Services.AddCors(options =>
@@ -108,6 +112,14 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("AllowAll");
+
+// Configure static files for uploads
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(
+        Path.Combine(builder.Environment.WebRootPath ?? Directory.GetCurrentDirectory(), "wwwroot", "uploads")),
+    RequestPath = "/uploads"
+});
 
 app.UseAuthentication();
 app.UseAuthorization();
