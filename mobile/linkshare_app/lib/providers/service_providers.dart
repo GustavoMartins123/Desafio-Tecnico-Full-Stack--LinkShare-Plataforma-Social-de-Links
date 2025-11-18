@@ -7,6 +7,9 @@ import '../services/friendship_service.dart';
 import '../services/profile_service.dart';
 import '../services/storage_service.dart';
 import '../services/feed_service.dart';
+import '../services/sync_service.dart';
+import '../database/app_database.dart';
+import '../repositories/collection_repository.dart';
 
 // SharedPreferences Provider
 final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
@@ -54,4 +57,28 @@ final friendshipServiceProvider = Provider<FriendshipService>((ref) {
 final feedServiceProvider = Provider<FeedService>((ref) {
   final apiClient = ref.watch(apiClientProvider);
   return FeedService(apiClient);
+});
+
+// Database Provider
+final databaseProvider = Provider<AppDatabase>((ref) {
+  final database = AppDatabase();
+  ref.onDispose(() => database.close());
+  return database;
+});
+
+// Collection Repository Provider (with offline support)
+final collectionRepositoryProvider = Provider<CollectionRepository>((ref) {
+  final database = ref.watch(databaseProvider);
+  final apiClient = ref.watch(apiClientProvider);
+  return CollectionRepository(database, apiClient);
+});
+
+// Sync Service Provider
+final syncServiceProvider = Provider<SyncService>((ref) {
+  final database = ref.watch(databaseProvider);
+  final apiClient = ref.watch(apiClientProvider);
+  final service = SyncService(database, apiClient);
+  service.startPeriodicSync();
+  ref.onDispose(() => service.dispose());
+  return service;
 });
