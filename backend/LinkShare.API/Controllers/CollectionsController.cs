@@ -189,14 +189,20 @@ public class CollectionsController : ControllerBase
     {
         var userId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
-        var collection = await _context.Collections.FindAsync(collectionId);
+        var collection = await _context.Collections
+            .Include(c => c.Shares)
+            .FirstOrDefaultAsync(c => c.Id == collectionId);
+
         if (collection == null)
         {
             return NotFound(new { message = "Collection not found" });
         }
 
-        // Only owner can add items
-        if (collection.OwnerId != userId)
+        // Owner can add items, or users with edit permission
+        var canEdit = collection.OwnerId == userId ||
+                     collection.Shares.Any(s => s.UserId == userId && s.CanEdit);
+
+        if (!canEdit)
         {
             return Forbid();
         }
@@ -225,18 +231,21 @@ public class CollectionsController : ControllerBase
     }
 
     /// <summary>
-    /// Share a private collection with a friend
+    /// Share a collection with a friend
     /// </summary>
     /// <param name="collectionId">Collection ID</param>
-    /// <param name="friendId">Friend user ID to share with</param>
-    /// <returns>No content</returns>
+    /// <param name="request">Share request with user ID and permissions</param>
+    /// <returns>Created share</returns>
     [Authorize]
-    [HttpPost("{collectionId}/share/{friendId}")]
-    public async Task<ActionResult> ShareCollection(int collectionId, int friendId)
+    [HttpPost("{collectionId}/share")]
+    public async Task<ActionResult<CollectionShareDto>> ShareCollection(int collectionId, [FromBody] ShareCollectionRequest request)
     {
         var userId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
-        var collection = await _context.Collections.FindAsync(collectionId);
+        var collection = await _context.Collections
+            .Include(c => c.Owner)
+            .FirstOrDefaultAsync(c => c.Id == collectionId);
+
         if (collection == null)
         {
             return NotFound(new { message = "Collection not found" });
@@ -250,8 +259,8 @@ public class CollectionsController : ControllerBase
 
         // Check if they are friends
         var areFriends = await _context.Friendships
-            .AnyAsync(f => ((f.RequesterId == userId && f.AddresseeId == friendId) ||
-                           (f.RequesterId == friendId && f.AddresseeId == userId)) &&
+            .AnyAsync(f => ((f.RequesterId == userId && f.AddresseeId == request.SharedWithUserId) ||
+                           (f.RequesterId == request.SharedWithUserId && f.AddresseeId == userId)) &&
                           f.Status == FriendshipStatus.Accepted);
 
         if (!areFriends)
@@ -261,7 +270,7 @@ public class CollectionsController : ControllerBase
 
         // Check if already shared
         var existingShare = await _context.CollectionShares
-            .FirstOrDefaultAsync(cs => cs.CollectionId == collectionId && cs.UserId == friendId);
+            .FirstOrDefaultAsync(cs => cs.CollectionId == collectionId && cs.UserId == request.SharedWithUserId);
 
         if (existingShare != null)
         {
@@ -271,11 +280,200 @@ public class CollectionsController : ControllerBase
         var share = new CollectionShare
         {
             CollectionId = collectionId,
-            UserId = friendId,
+            UserId = request.SharedWithUserId,
+            CanEdit = request.CanEdit,
             SharedAt = DateTime.UtcNow
         };
 
         _context.CollectionShares.Add(share);
+        await _context.SaveChangesAsync();
+
+        // Load user info for response
+        var sharedWithUser = await _context.Users
+            .Include(u => u.Profile)
+            .FirstOrDefaultAsync(u => u.Id == request.SharedWithUserId);
+
+        return CreatedAtAction(nameof(GetCollectionById), new { collectionId }, new CollectionShareDto
+        {
+            Id = share.Id,
+            CollectionId = collectionId,
+            CollectionName = collection.Title,
+            SharedWithUserId = request.SharedWithUserId,
+            SharedWithUsername = sharedWithUser!.Username,
+            SharedWithDisplayName = sharedWithUser.Profile!.DisplayName,
+            SharedAt = share.SharedAt,
+            CanEdit = share.CanEdit
+        });
+    }
+
+    /// <summary>
+    /// Get all shares for a specific collection (owner only)
+    /// </summary>
+    /// <param name="collectionId">Collection ID</param>
+    /// <returns>List of shares</returns>
+    [Authorize]
+    [HttpGet("{collectionId}/shares")]
+    public async Task<ActionResult<List<CollectionShareDto>>> GetCollectionShares(int collectionId)
+    {
+        var userId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+        var collection = await _context.Collections.FindAsync(collectionId);
+        if (collection == null)
+        {
+            return NotFound(new { message = "Collection not found" });
+        }
+
+        // Only owner can view shares
+        if (collection.OwnerId != userId)
+        {
+            return Forbid();
+        }
+
+        var shares = await _context.CollectionShares
+            .Where(cs => cs.CollectionId == collectionId)
+            .Include(cs => cs.User)
+            .ThenInclude(u => u.Profile)
+            .Include(cs => cs.Collection)
+            .Select(cs => new CollectionShareDto
+            {
+                Id = cs.Id,
+                CollectionId = cs.CollectionId,
+                CollectionName = cs.Collection.Title,
+                SharedWithUserId = cs.UserId,
+                SharedWithUsername = cs.User.Username,
+                SharedWithDisplayName = cs.User.Profile!.DisplayName,
+                SharedAt = cs.SharedAt,
+                CanEdit = cs.CanEdit
+            })
+            .OrderByDescending(cs => cs.SharedAt)
+            .ToListAsync();
+
+        return Ok(shares);
+    }
+
+    /// <summary>
+    /// Get all collections shared with me
+    /// </summary>
+    /// <returns>List of shared collections</returns>
+    [Authorize]
+    [HttpGet("shared-with-me")]
+    public async Task<ActionResult<List<SharedCollectionDto>>> GetSharedWithMe()
+    {
+        var userId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+        var sharedCollections = await _context.CollectionShares
+            .Where(cs => cs.UserId == userId)
+            .Include(cs => cs.Collection)
+            .ThenInclude(c => c.Owner)
+            .ThenInclude(o => o.Profile)
+            .Include(cs => cs.Collection.LinkItems)
+            .Select(cs => new SharedCollectionDto
+            {
+                Id = cs.Collection.Id,
+                Name = cs.Collection.Title,
+                Description = cs.Collection.Description,
+                IsPublic = cs.Collection.IsPublic,
+                OwnerId = cs.Collection.OwnerId,
+                OwnerUsername = cs.Collection.Owner.Username,
+                OwnerDisplayName = cs.Collection.Owner.Profile!.DisplayName,
+                SharedAt = cs.SharedAt,
+                CanEdit = cs.CanEdit,
+                LinkCount = cs.Collection.LinkItems.Count
+            })
+            .OrderByDescending(sc => sc.SharedAt)
+            .ToListAsync();
+
+        return Ok(sharedCollections);
+    }
+
+    /// <summary>
+    /// Update share permissions (owner only)
+    /// </summary>
+    /// <param name="collectionId">Collection ID</param>
+    /// <param name="shareId">Share ID</param>
+    /// <param name="request">Updated permissions</param>
+    /// <returns>Updated share</returns>
+    [Authorize]
+    [HttpPut("{collectionId}/share/{shareId}")]
+    public async Task<ActionResult<CollectionShareDto>> UpdateSharePermissions(
+        int collectionId,
+        int shareId,
+        [FromBody] ShareCollectionRequest request)
+    {
+        var userId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+        var collection = await _context.Collections.FindAsync(collectionId);
+        if (collection == null)
+        {
+            return NotFound(new { message = "Collection not found" });
+        }
+
+        // Only owner can update permissions
+        if (collection.OwnerId != userId)
+        {
+            return Forbid();
+        }
+
+        var share = await _context.CollectionShares
+            .Include(cs => cs.User)
+            .ThenInclude(u => u.Profile)
+            .Include(cs => cs.Collection)
+            .FirstOrDefaultAsync(cs => cs.Id == shareId && cs.CollectionId == collectionId);
+
+        if (share == null)
+        {
+            return NotFound(new { message = "Share not found" });
+        }
+
+        share.CanEdit = request.CanEdit;
+        await _context.SaveChangesAsync();
+
+        return Ok(new CollectionShareDto
+        {
+            Id = share.Id,
+            CollectionId = share.CollectionId,
+            CollectionName = share.Collection.Title,
+            SharedWithUserId = share.UserId,
+            SharedWithUsername = share.User.Username,
+            SharedWithDisplayName = share.User.Profile!.DisplayName,
+            SharedAt = share.SharedAt,
+            CanEdit = share.CanEdit
+        });
+    }
+
+    /// <summary>
+    /// Remove a share (owner only)
+    /// </summary>
+    /// <param name="collectionId">Collection ID</param>
+    /// <param name="shareId">Share ID</param>
+    /// <returns>No content</returns>
+    [Authorize]
+    [HttpDelete("{collectionId}/share/{shareId}")]
+    public async Task<ActionResult> RemoveShare(int collectionId, int shareId)
+    {
+        var userId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+
+        var collection = await _context.Collections.FindAsync(collectionId);
+        if (collection == null)
+        {
+            return NotFound(new { message = "Collection not found" });
+        }
+
+        // Only owner can remove shares
+        if (collection.OwnerId != userId)
+        {
+            return Forbid();
+        }
+
+        var share = await _context.CollectionShares
+            .FirstOrDefaultAsync(cs => cs.Id == shareId && cs.CollectionId == collectionId);
+
+        if (share == null)
+        {
+            return NotFound(new { message = "Share not found" });
+        }
+
+        _context.CollectionShares.Remove(share);
         await _context.SaveChangesAsync();
 
         return NoContent();

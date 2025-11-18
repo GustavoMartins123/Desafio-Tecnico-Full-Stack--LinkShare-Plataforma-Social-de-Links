@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/collection_provider.dart';
 import 'add_collection_screen.dart';
 import 'collection_detail_screen.dart';
+import 'shared_with_me_screen.dart';
 import 'package:intl/intl.dart';
 
 class MyCollectionsTab extends ConsumerWidget {
@@ -17,7 +18,17 @@ class MyCollectionsTab extends ConsumerWidget {
         title: const Text('My Collections'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.folder_shared),
+            tooltip: 'Shared with me',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SharedWithMeScreen()),
+              );
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.add),
+            tooltip: 'Create collection',
             onPressed: () {
               Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const AddCollectionScreen()),

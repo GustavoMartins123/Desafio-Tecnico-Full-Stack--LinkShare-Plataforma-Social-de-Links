@@ -99,14 +99,15 @@ class CollectionDetailScreen extends ConsumerWidget {
                               const SizedBox(width: 8),
                               Expanded(
                                 child: OutlinedButton.icon(
-                                  onPressed: () {
-                                    Navigator.of(context).push(
+                                  onPressed: () async {
+                                    await Navigator.of(context).push(
                                       MaterialPageRoute(
                                         builder: (_) => ShareCollectionScreen(
-                                          collectionId: collection.id,
+                                          collection: collection,
                                         ),
                                       ),
                                     );
+                                    ref.invalidate(collectionDetailProvider(collectionId));
                                   },
                                   icon: const Icon(Icons.share),
                                   label: const Text('Share'),
